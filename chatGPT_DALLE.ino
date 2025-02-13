@@ -1,40 +1,41 @@
-// William Webb fork of the amazing sketch described in the video below
-// beware ESP32S3 from Amazon - two I received had bas PSRAM, one additional unit was damaged in shipping
-// I encountered some problems with SD card boards.  Some require pullup resistors, some don't
-// The Adafruit board works well.
-// I am using an ESP32-S3-N16R8
-//
-//
-// This project works on the ESP32-S3-N16R2 (8MB of PSRAM)
-// PSRAM is needed for this project.
-// Tested on :
-// Arduino Espressif Core v2.014  (3.1.1 would not work well for me)
-// PNGdec v1.0.3
-// TFT_eSPI  v2.5.43
-// AnimatedGIF v2.1.1
-// SimpleRotary v1.1.3
-// base64_encode v2.0.4
-//
-// The round display (https://amzn.to/3L4pud6) use the GC9A01 driver from the TFT_eSPI library
-// The Micro SD Card Module (optional) is this one : https://amzn.to/46tSgvn
-// The Rotary Encoder (optional) is this one: https://amzn.to/3Cj7t61
-//
-// See the full tutorial here : https://youtu.be/zBzIBRsckTw
+/* William Webb fork of the amazing sketch described in the video below
+   beware ESP32S3 from Amazon - two I received had bas PSRAM, one additional unit was damaged in shipping
+   I encountered some problems with SD card boards.  Some require pullup resistors, some don't
+   The Adafruit board works well.
+   I am using an ESP32-S3-N16R8
 
-#include <PNGdec.h>            // Install this library with the Arduino IDE Library Manager
-#include <TFT_eSPI.h>          // Install this library with the Arduino IDE Library Manager
+   This project works on the ESP32-S3-N16R2 (8MB of PSRAM)
+   PSRAM is needed for this project.
+   Tested on :
+   Arduino Espressif Core v2.0.18 fails om v3.1.1
+   PNGdec v1.0.3
+  TFT_eSPI  v2.5.43
+  AnimatedGIF v2.1.1
+  SimpleRotary v1.1.3
+  base64_encode v2.0.4
+
+  The round display (https://amzn.to/3L4pud6) use the GC9A01 driver from the TFT_eSPI library
+  The Micro SD Card Module (optional) is this one : https://amzn.to/46tSgvn
+  The Rotary Encoder (optional) is this one: https://amzn.to/3Cj7t61
+
+  See the full tutorial here : https://youtu.be/zBzIBRsckTw
+
+  02/13/2025 Redacted WiFi Multi.  it used too much memory and made the sketch unstable.
+             Added better vacuum tube prompt suggested by GPT-4o
+*/
+#include <PNGdec.h>            // Creates PNG for B64 data
+#include <TFT_eSPI.h>          // dDriver for TFT display
                                // Don't forget to configure the driver for your display!
-#include <AnimatedGIF.h>       // Install this library with the Arduino IDE Library Manager
-#include <SimpleRotary.h>      // Install this library with the Arduino IDE Library Manager
-#include <SD.h>                // Install this library with the Arduino IDE Library Manager
-#include <WiFiClientSecure.h>  // Install this library with the Arduino IDE Library Manager
-#include "arduino_base64.hpp"  // Install this library (base64_encode by dojyorin) with the Arduino IDE Library Manager
-
+#include <AnimatedGIF.h>       // Needed for READY animation
+#include <SimpleRotary.h>      // Encoder Wheel driver
+#include <SD.h>                // uSD card driver
+#include <WiFiClientSecure.h>  // Needed to connect to HTTPs site
+#include "arduino_base64.hpp"  // Base 64 downloader
 #include <WiFi.h>
 
-#include "secrets.h"
-#include "display.h"
-#include "switch.h"
+#include "secrets.h"                // Passwords and keys
+#include "display.h"                // Reports display size x size
+#include "switch.h"                 // Switch device driver 
 #include "images/ai.h"              // AI Animated GIF
 #include "images/readyPng.h"        // Ready PNG
 #include "images/readyAnimation.h"  // Ready Animated GIF
@@ -56,7 +57,7 @@ int cs = 5;
 
 #ifdef USE_SD_CARD
 // The rotary encoder can be used only with the SD Card Module
-//#define USE_ROTARY_ENCODER  // Comment this line if you don't want to use the rotary encoder, it is used to navigate files on the SD card module
+#define USE_ROTARY_ENCODER  // Comment this line if you don't want to use the rotary encoder, it is used to navigate files on the SD card module
 #endif
 
 #ifdef DEBUG_ON
@@ -109,20 +110,23 @@ bool runImageGeneration = false;  // Flag to indicate if generation of images is
 #define PSRAM_BUFFER_DECODED_LENGTH 4000000L       // Length of buffer for base64 data decoding in PSRAM
 #define PSRAM_BUFFER_READ_ENCODED_LENGTH 2000000L  // Length of buffer for reading the base64 encoded data in PSRAM
 #define BUFFER_RESPONSE_LENGTH 128                 // Length of buffer for reading api response in chunks
-#define READ_DELAY 7                              // needed to sync data from WiFi with buffer
+#define READ_DELAY 7                               // needed to sync data from WiFi with buffer
 SPIClass hspi = SPIClass(HSPI);                    // For SSD Card
 
 // Delimiters to extract base64 data in Json
 const char *startToken = "\"b64_json\": \"";
 //const char *endToken = "\"";
-const char *endToken = "\"=="; //WEW per spec
-
+const char *endToken = "\"==";  //WEW per spec
 
 // Prompts
+
+// prompt modifier  "Restrict the image to the middle 240 pixel x 240 pixel in the center of the frame"
+
 const int promptsCount = 11;
-char *prompts[promptsCount] = { "A toggle switch in the off position.", "A toggle switch in the open", "A 12AX7 vacuum tube with the filament brightly lit.", "A 12AX7 vacuum tube with the filament unlit.",
-                                "A line graph of temerature vs time make the image small 128x128 so that it will fit in the middle of the dislay.  Time is 0 to 4 hours. Temperature is 62 F to 73 F.", "A 1950s style ham radio tuning dial", "Control Panels of an Alien Spaceship", "A ham radio antenna.  Make it a 40m beam",
-                                "A futuristic ham shack", "A QSL card.  Be creative.", "A 1950s style ham radio frequency display 14.120 Mhz" };
+char *prompts[promptsCount] = { "Create a detailed close-up of a classic vacuum tube, such as a 12AX7 or 6L6, with visible glass enclosure, internal metal plates, glowing filaments, and metal pins at the base. The background is dark and moody, highlighting the warm glow of the tube."," A toggle switch in the off position.", "A toggle switch in the open", "A vacuum tube with the filament unlit.",
+                                "A line graph of temperature vs time. Time is 0 to 4 hours. Temperature is 62 F to 73 F.", "A 1950s style ham radio tuning dial.", "Control panel of an Alien Spaceship", "A ham radio antenna. Make it a 40m beam",
+                                "A futuristic ham shack", "A QSL card. Be creative.", "A 1950s style ham radio frequency display 14.120 Mhz" };
+
 
 enum imageGenerationMode {
   MODE_SEQUENTIAL,  // Images are generated in sequential order of the prompts
@@ -138,12 +142,10 @@ PNG png;  // PNG decoder instance
 
 // Display - You must disable chip select pin definitions in the user_setup.h and the driver setup (ex.: Setup46_GC9A01_ESP32.h)
 TFT_eSPI tft = TFT_eSPI();   // Make sure SPI_FREQUENCY is 20000000 in your TFT_eSPI driver for your display if on a breadboard
-const int NUM_DISPLAYS = 4;  // Adjust this value based on the number of displays
+const int NUM_DISPLAYS = 2;  // Adjust this value based on the number of displays
 Display display[NUM_DISPLAYS] = {
   Display(15),  // Assign a chip select pin for each display
   Display(7),
-  Display(6),
-  Display(16)
 };
 
 String base64Data;           // String buffer for base64 encoded Data
@@ -152,7 +154,8 @@ uint8_t *decodedBase64Data;  // Buffer to decode base64 data
 void setup() {
   Serial.begin(115200);
   delay(20);
-  Serial.print("compiler Version: "); Serial.println(__cplusplus);
+  Serial.print("compiler Version: ");
+  Serial.println(__cplusplus);
   connectToWifiNetwork();
   Serial.println("WEW return from wifi");
   if (!initDisplayPinsAndStorage()) {
@@ -686,9 +689,12 @@ void callOpenAIAPIDalle(String *readBuffer, const char *prompt) {
     return;
   }
 
+  //String jsonPayload = "{\"model\": \"dall-e-3\", \"prompt\": \"";
+
   String jsonPayload = "{\"model\": \"dall-e-2\", \"prompt\": \"";
   jsonPayload += prompt;
   jsonPayload += "\", \"n\": 1, \"size\": \"256x256\", \"quality\": \"standard\", \"response_format\": \"b64_json\"}";
+  //jsonPayload += "\", \"n\": 1, \"size\": \"1024x1024\", \"quality\": \"standard\", \"response_format\": \"b64_json\"}";
 
   String request = "POST /v1/images/generations HTTP/1.1\r\n";
   request += "Host: " + String(host) + "\r\n";
@@ -699,7 +705,7 @@ void callOpenAIAPIDalle(String *readBuffer, const char *prompt) {
   request += jsonPayload;
 
   Serial.print("WEW payload request: ");
-  Serial.println(request); // WEW
+  Serial.println(request);  // WEW
 
   client.print(request);
 
@@ -919,7 +925,7 @@ size_t displayPngImage(const char *imageBase64Png, int displayIndex) {
   size_t length = base64::decodeLength(imageBase64Png);
   base64::decode(imageBase64Png, decodedBase64Data);
 
-  DEBUG_PRINTF("base64 encoded length = %ld\n", strlen(imageBase64Png));   
+  DEBUG_PRINTF("base64 encoded length = %ld\n", strlen(imageBase64Png));
   DEBUG_PRINTF("base64 decoded length = %ld\n", length);
 
   displayPngFromRam(decodedBase64Data, strlen(imageBase64Png), displayIndex);
